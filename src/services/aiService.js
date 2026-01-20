@@ -18,13 +18,22 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// ✅ Using GPT-4o-mini for all AI operations
+const MODEL_CONFIG = {
+  navigation: "gpt-4o-mini", // For AI-based navigation matching
+  chat: "gpt-4o-mini", // For chat responses with navigation
+  general: "gpt-4o-mini", // For general conversation
+};
+
+// You can easily switch models here if needed in the future
+const GPT_MODEL = "gpt-4o-mini";
+
 // =====================================================
 // 1️⃣ FAQ MATCHING (highest priority)
 // =====================================================
 function matchFAQ(query) {
   const q = query.toLowerCase().trim();
 
-  // Remove common stop words
   const stopWords = [
     "uchun",
     "bilan",
@@ -53,34 +62,25 @@ function matchFAQ(query) {
     for (const keyword of faq.keywords) {
       const keywordLower = keyword.toLowerCase();
 
-      // EXACT MATCH (highest priority)
       if (q === keywordLower) {
         score += 100;
         matchedKeywords.push(keyword);
-      }
-      // EXACT PHRASE MATCH
-      else if (q.includes(keywordLower) || keywordLower.includes(q)) {
+      } else if (q.includes(keywordLower) || keywordLower.includes(q)) {
         score += 50;
         matchedKeywords.push(keyword);
-      }
-      // MULTI-WORD MATCH - CHECK WORD BOUNDARIES
-      else {
+      } else {
         const keywordWords = keywordLower.split(/\s+/);
-
-        // ✅ FIX: Use exact word matching, not substring
         const matchedWords = queryWords.filter((qw) =>
-          keywordWords.some((kw) => qw === kw || kw === qw)
+          keywordWords.some((kw) => qw === kw || kw === qw),
         );
 
         if (
           matchedWords.length > 0 &&
           matchedWords.length === keywordWords.length
         ) {
-          // All keyword words found in query
           score += 30 * keywordWords.length;
           matchedKeywords.push(keyword);
         } else if (matchedWords.length > 0) {
-          // Partial match
           score += 10 * matchedWords.length;
           matchedKeywords.push(keyword);
         }
@@ -88,7 +88,6 @@ function matchFAQ(query) {
     }
 
     if (score > highestScore && score >= 30) {
-      // ✅ Increased threshold
       highestScore = score;
       bestMatch = {
         ...faq,
@@ -101,7 +100,7 @@ function matchFAQ(query) {
 
   if (bestMatch) {
     console.log(
-      `💡 FAQ Match Found: ${bestMatch.question} (score: ${highestScore})`
+      `💡 FAQ Match Found: ${bestMatch.question} (score: ${highestScore})`,
     );
     console.log(`   Matched keywords: ${bestMatch.matchedKeywords.join(", ")}`);
   }
@@ -139,7 +138,7 @@ function keywordMatch(query) {
       } else {
         const keywordWords = keywordLower.split(/\s+/);
         const allWordsMatch = keywordWords.every((kw) =>
-          queryWords.some((qw) => qw.includes(kw) || kw.includes(qw))
+          queryWords.some((qw) => qw.includes(kw) || kw.includes(qw)),
         );
 
         if (allWordsMatch && keywordWords.length > 1) {
@@ -148,7 +147,8 @@ function keywordMatch(query) {
         } else if (
           keywordWords.length === 1 &&
           queryWords.some(
-            (qw) => qw.includes(keywordWords[0]) || keywordWords[0].includes(qw)
+            (qw) =>
+              qw.includes(keywordWords[0]) || keywordWords[0].includes(qw),
           )
         ) {
           score += 10;
@@ -171,7 +171,7 @@ function keywordMatch(query) {
 
   if (bestMatch && highestScore >= 10) {
     console.log(
-      `🎯 Navigation Match Found: ${bestMatch.intent} (score: ${highestScore})`
+      `🎯 Navigation Match Found: ${bestMatch.intent} (score: ${highestScore})`,
     );
     console.log(`   Matched keywords: ${bestMatch.matchedKeywords.join(", ")}`);
     return bestMatch;
@@ -189,7 +189,7 @@ async function aiMatch(query) {
       (item, idx) =>
         `${idx + 1}. "${item.intent}" → ${
           item.url
-        }\n   Keywords: ${item.keywords.slice(0, 5).join(", ")}`
+        }\n   Keywords: ${item.keywords.slice(0, 5).join(", ")}`,
     )
     .join("\n\n");
 
@@ -215,25 +215,42 @@ IMPORTANT:
 Your response:`;
 
   try {
+    const model = MODEL_CONFIG.navigation;
+    const startTime = Date.now();
+
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model,
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_tokens: 50,
     });
 
+    const processingTime = Date.now() - startTime;
     const text = response.choices[0].message.content.trim();
-    console.log(`🤖 AI Response: "${text}"`);
+
+    console.log(`🤖 AI Response: "${text}" (${model}, ${processingTime}ms)`);
 
     if (text === "NOT_FOUND") {
-      return { url: "NOT_FOUND", matched: false };
+      return {
+        url: "NOT_FOUND",
+        matched: false,
+        model,
+        tokens: response.usage?.total_tokens || 0,
+        processingTime,
+      };
     }
 
     const foundItem = siteMap.find((item) => item.url === text);
 
     if (!foundItem) {
       console.log(`⚠️ AI returned invalid URL: ${text}`);
-      return { url: "NOT_FOUND", matched: false };
+      return {
+        url: "NOT_FOUND",
+        matched: false,
+        model,
+        tokens: response.usage?.total_tokens || 0,
+        processingTime,
+      };
     }
 
     console.log(`✅ AI Match Found: ${foundItem.intent}`);
@@ -241,6 +258,9 @@ Your response:`;
       url: text,
       intent: foundItem.intent,
       matched: true,
+      model,
+      tokens: response.usage?.total_tokens || 0,
+      processingTime,
     };
   } catch (error) {
     console.error("AI Match Error:", error);
@@ -254,7 +274,6 @@ Your response:`;
 export async function detectNavigation(query) {
   console.log(`\n🔍 Processing query: "${query}"`);
 
-  // Step 1: Check FAQ first (highest priority)
   const faqResult = matchFAQ(query);
   if (faqResult) {
     console.log(`✅ FAQ answer found\n`);
@@ -262,22 +281,24 @@ export async function detectNavigation(query) {
       type: "FAQ",
       matched: true,
       faq: faqResult,
+      model: "keyword-match",
+      tokens: 0,
     };
   }
 
-  // Step 2: Try navigation keyword match
   const keywordResult = keywordMatch(query);
   if (keywordResult) {
     console.log(`✅ Navigation detected via keywords\n`);
     return {
       type: "NAVIGATION",
       ...keywordResult,
+      model: "keyword-match",
+      tokens: 0,
     };
   }
 
   console.log(`⏭️ No keyword match, trying AI...`);
 
-  // Step 3: AI fallback for navigation
   const aiResult = await aiMatch(query);
   console.log(`${aiResult.matched ? "✅" : "❌"} AI navigation result\n`);
 
@@ -291,6 +312,8 @@ export async function detectNavigation(query) {
   return {
     type: "NOT_FOUND",
     matched: false,
+    model: aiResult.model || "none",
+    tokens: aiResult.tokens || 0,
   };
 }
 
@@ -298,12 +321,14 @@ export async function detectNavigation(query) {
 // 💬 GENERATE CHAT RESPONSE
 // =====================================================
 export async function generateChatResponse(query, detectionResult) {
-  // Handle FAQ responses
   if (detectionResult && detectionResult.type === "FAQ") {
-    return detectionResult.faq.answer;
+    return {
+      message: detectionResult.faq.answer,
+      model: "keyword-match",
+      tokens: 0,
+    };
   }
 
-  // Handle navigation responses
   const isNavigating =
     detectionResult &&
     detectionResult.type === "NAVIGATION" &&
@@ -336,8 +361,11 @@ MUHIM: Link avtomatik chiqadi, siz faqat 1 gap yozing!
 }`;
 
   try {
+    const model = MODEL_CONFIG.chat;
+    const startTime = Date.now();
+
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: query },
@@ -346,12 +374,24 @@ MUHIM: Link avtomatik chiqadi, siz faqat 1 gap yozing!
       max_tokens: isNavigating ? 30 : 100,
     });
 
-    return response.choices[0].message.content.trim();
+    const processingTime = Date.now() - startTime;
+
+    return {
+      message: response.choices[0].message.content.trim(),
+      model,
+      tokens: response.usage?.total_tokens || 0,
+      processingTime,
+    };
   } catch (error) {
     console.error("Chat Response Error:", error);
-    return isNavigating
-      ? "Bu yerga bosing"
-      : "Kechirasiz, xatolik yuz berdi. Qaytadan urinib ko'ring.";
+    return {
+      message: isNavigating
+        ? "Bu yerga bosing"
+        : "Kechirasiz, xatolik yuz berdi. Qaytadan urinib ko'ring.",
+      model: MODEL_CONFIG.chat,
+      tokens: 0,
+      error: error.message,
+    };
   }
 }
 
@@ -370,8 +410,11 @@ VAZIFANGIZ:
 Kompaniya: Ko'prikqurilish - qurilish sohasida faoliyat yuritadi.`;
 
   try {
+    const model = MODEL_CONFIG.general;
+    const startTime = Date.now();
+
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: query },
@@ -380,9 +423,21 @@ Kompaniya: Ko'prikqurilish - qurilish sohasida faoliyat yuritadi.`;
       max_tokens: 100,
     });
 
-    return response.choices[0].message.content.trim();
+    const processingTime = Date.now() - startTime;
+
+    return {
+      message: response.choices[0].message.content.trim(),
+      model,
+      tokens: response.usage?.total_tokens || 0,
+      processingTime,
+    };
   } catch (error) {
     console.error("General Chat Error:", error);
-    return "Kechirasiz, xatolik yuz berdi. Qaytadan urinib ko'ring.";
+    return {
+      message: "Kechirasiz, xatolik yuz berdi. Qaytadan urinib ko'ring.",
+      model: MODEL_CONFIG.general,
+      tokens: 0,
+      error: error.message,
+    };
   }
 }
